@@ -22,12 +22,12 @@ gettingstarted.md
 ```{toctree}
 :maxdepth: 1
 :caption: Examples
-examples/pure_dephasing.ipynb
+pure_dephasing.ipynb
 spin_boson.ipynb
 spin_boson_ud.ipynb
 structured_spin_boson.ipynb
 three_site_FMO.ipynb
-pi_half_pulse.ipynb
+time_dependent_no_quantity.ipynb
 ESD_different_bath.ipynb
 ```
 

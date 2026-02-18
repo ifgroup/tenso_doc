@@ -1,0 +1,21 @@
+name: TENSO_Docs
+description: Documentation for the TENSO project
+
+# Fixed: The field must be 'channels', not 'conda_channels'
+channels:
+  - conda-forge
+  - defaults
+
+packages:
+  - python=3.11
+  - sphinx=8.1.3
+  - sphinx-autoapi
+  - sphinx-rtd-theme
+  - myst-nb
+  - sphinx-math-dollar
+
+commands:
+  build:
+    unix: rm -rf build source/autoapi && sphinx-build -M html source build
+  serve:
+    unix: python -m http.server --directory build/html

@@ -50,8 +50,8 @@ The ``tenso.backend`` module is the foundation upon which all computation in
 controlling global package settings (numerical precision, default device), and
 registering the integration methods available for time propagation. All higher
 layers interact with hardware and solvers exclusively through this module, which
-means that switching from CPU to GPU or changing the ODE solver requires touching
-only this one file.
+means that changing the ODE solver or hardware target requires touching only this
+one file.
 
 Dependencies and design rationale
 -----------------------------------
@@ -59,18 +59,18 @@ Dependencies and design rationale
 ``TENSO`` depends on three external libraries. The choice of each is deliberate:
 
 `PyTorch <https://pytorch.org>`_ — **primary tensor computation engine**
-   PyTorch was chosen over NumPy-only or JAX-based alternatives for two reasons.
-   First, its native CUDA support allows the same tensor operations to run on CPU
-   or GPU without code changes — critical for the large tensor contractions that
-   arise in TTN propagation. Second, PyTorch's dynamic computation graph and
-   automatic differentiation infrastructure provide a flexible foundation for
-   future extensions, such as gradient-based optimization of bath parameters.
+   PyTorch was chosen over NumPy-only or JAX-based alternatives for its
+   hardware-agnostic tensor operations — the same code runs on CPU or GPU
+   without modification, which is critical for the large tensor contractions
+   that arise in TTN propagation. PyTorch's dynamic computation graph and
+   automatic differentiation infrastructure also provide a flexible foundation
+   for future extensions, such as gradient-based optimization of bath parameters.
    The backend exposes PyTorch's device management so that all ``TENSO`` objects
    (state tensors, operator matrices, propagator buffers) are consistently
    allocated on the same device.
 
 `NumPy <https://numpy.org>`_ — **auxiliary numerics and interoperability**
-   NumPy handles operations that do not benefit from GPU acceleration — such as
+   NumPy handles operations outside the main propagation loop — such as
    constructing spectral density grids, initializing sparse operator dictionaries,
    and interfacing with external analysis tools. It also serves as the interchange
    format when passing data to and from plotting libraries or other Python
@@ -94,8 +94,8 @@ that affect all computations:
 - **Floating-point precision** — the default dtype (``torch.float64`` for most
   quantum dynamics problems, where accumulated round-off in long propagations
   is a practical concern).
-- **Default device** — CPU or a specific CUDA device, set once and inherited by
-  all subsequently constructed ``TENSO`` objects.
+- **Default device** — CPU or GPU, set once and inherited by all subsequently
+  constructed ``TENSO`` objects.
 - **Complex number support** — ``TENSO`` works with complex-valued tensors
   throughout; the backend ensures that PyTorch's complex dtype handling is
   configured consistently.
@@ -167,23 +167,24 @@ The general master equations addressed by ``TENSO`` take the form
 
 .. math::
 
-   \frac{\mathrm{d}}{\mathrm{d}t}\,|\Omega(t)\rangle = L(t)\,|\Omega(t)\rangle
+   \frac{\mathrm{d}}{\mathrm{d}t}\,|\Omega(t)\rangle = \mathcal{L}(t)\,|\Omega(t)\rangle
 
 where :math:`|\Omega(t)\rangle` is the **Extended Density Operator (EDO)** — a
 high-dimensional tensor that collects the physical reduced density matrix
-:math:`\rho_S(t)` together with the full hierarchy of auxiliary density matrices
-(ADMs). Concretely, the EDO is organized as
+:math:`\rho_\textrm{S}(t)` together with the full hierarchy of auxiliary density
+matrices (ADMs). Concretely, the EDO is organized as
 
 .. math::
 
    |\Omega(t)\rangle = \sum_{\vec{n}}\, \varrho_{\vec{n}}(t)\,|\vec{n}\rangle,
 
 where :math:`\vec{n} = (n_1, \ldots, n_K)` indexes the bexcitonic occupation
-numbers and :math:`\varrho_{\vec{0}}(t) = \rho_S(t)` is the system's reduced
-density matrix. :math:`L(t)` is the generator of the dynamics. Layer 2 implements
-the efficient propagation of this equation without ever forming
-:math:`|\Omega(t)\rangle` or :math:`L(t)` explicitly as dense objects. It does
-so through two complementary representations described below.
+numbers and :math:`\varrho_{\vec{0}}(t) = \rho_\textrm{S}(t)` is the system's
+reduced density matrix. :math:`\mathcal{L}(t)` is the Liouvillian superoperator
+generating the dynamics. Layer 2 implements the efficient propagation of this
+equation without ever forming :math:`|\Omega(t)\rangle` or
+:math:`\mathcal{L}(t)` explicitly as dense objects. It does so through two
+complementary representations described below.
 
 Why tensor networks? The exponential wall
 ------------------------------------------
@@ -205,11 +206,11 @@ tensors :math:`A^{(0)}(t), U^{(1)}(t), \ldots, U^{(K-1)}(t)`:
 
 .. math::
 
-   [\Omega(t)]_{ij,n_1\cdots n_K}
+   [\Omega(t)]_{ijn_1\cdots n_K}
    = \sum_{a_1 \cdots a_{K-1}}
-     A^{(0)}_{ij,a_1}(t)\;
-     U^{(1)}_{a_1,\beta_1\gamma_1}(t)\;\cdots\;
-     U^{(K-1)}_{a_{K-1},\beta_{K-1}\gamma_{K-1}}(t).
+     A^{(0)}_{ija_1}(t)\;
+     U^{(1)}_{a_1\beta_1\gamma_1}(t)\;\cdots\;
+     U^{(K-1)}_{a_{K-1}\beta_{K-1}\gamma_{K-1}}(t).
 
 For bond dimensions :math:`R_s = \mathcal{O}(R)` and bexciton depth
 :math:`N_k = \mathcal{O}(N)`, the space complexity of the TTN is
@@ -242,23 +243,23 @@ The Sum-of-Product generator
 ------------------------------
 
 Even with a compact TTN representation of :math:`|\Omega(t)\rangle`, applying
-:math:`L(t)` is only efficient if :math:`L(t)` itself has a structured form.
-In the bexcitonic formulation, the generator takes a natural Sum-of-Product (SoP)
-form:
+:math:`\mathcal{L}(t)` is only efficient if :math:`\mathcal{L}(t)` itself has a
+structured form. In the bexcitonic formulation, the Liouvillian superoperator
+takes a natural Sum-of-Product (SoP) form:
 
 .. math::
 
-   L(t) = \sum_{m=1}^{5K+2}
+   \mathcal{L}(t) = \sum_{m=1}^{5K+2}
            h^>_m(t) \otimes h^<_m(t)
            \otimes h^{(1)}_m \otimes \cdots \otimes h^{(K)}_m,
 
 where each product term consists of a component :math:`h^>_m(t)` acting on the
 ket index :math:`|i\rangle`, a component :math:`h^<_m(t)` acting on the bra
 index :math:`\langle j|`, and local operators :math:`h^{(k)}_m` acting on the
-:math:`k`-th bexciton space :math:`|n_k\rangle`. Each dissipator :math:`D_k` in
-the bexcitonic master equation contributes five product terms, and the system
-Liouvillian :math:`-iH_S^\times(t)` contributes two more, giving :math:`5K+2`
-terms in total.
+:math:`k`-th bexciton space :math:`|n_k\rangle`. Each dissipator
+:math:`\mathcal{D}_k` in the bexcitonic master equation contributes five product
+terms, and the system Liouvillian :math:`-iH_\textrm{S}^\times(t)` contributes
+two more, giving :math:`5K+2` terms in total.
 
 This factored structure means that applying one product term to the TTN requires
 only a sequence of small local contractions — one per node — rather than a global
@@ -275,7 +276,7 @@ Layer 2 implements three objects that together form the propagation pipeline:
 
    Frame  ──(topology)──►  Model  |Ω(t)⟩  =  Con(A⁽⁰⁾, U⁽¹⁾, …, U⁽ᴷ⁻¹⁾)
                                       │
-                          SparseSPO   L(t) = Σₘ h>ₘ ⊗ h<ₘ ⊗ h⁽¹⁾ₘ ⊗ … ⊗ h⁽ᴷ⁾ₘ
+                          SparseSPO   ℒ(t) = Σₘ h>ₘ ⊗ h<ₘ ⊗ h⁽¹⁾ₘ ⊗ … ⊗ h⁽ᴷ⁾ₘ
                                       │
                                       ▼
                         SparsePropagator ──► |Ω(t + Δt)⟩
@@ -283,9 +284,9 @@ Layer 2 implements three objects that together form the propagation pipeline:
 A ``Frame`` defines the *topology* of the TTN (which nodes exist, how they connect,
 which bonds carry system vs. bexciton indices). A ``Model`` fills that topology with
 concrete tensor data — the root tensor :math:`A^{(0)}(t)` and the semi-unitary core
-tensors :math:`U^{(s)}(t)`. A ``SparseSPO`` encodes the generator :math:`L(t)` in
-SoP form. A ``SparsePropagator`` takes a ``Model`` and a ``SparseSPO`` and advances
-:math:`|\Omega(t)\rangle` in time.
+tensors :math:`U^{(s)}(t)`. A ``SparseSPO`` encodes the Liouvillian superoperator
+:math:`\mathcal{L}(t)` in SoP form. A ``SparsePropagator`` takes a ``Model`` and a
+``SparseSPO`` and advances :math:`|\Omega(t)\rangle` in time.
 
 .. _layer2-state:
 
@@ -352,7 +353,7 @@ a checkpoint).
        **orthogonality center** — the node with respect to which all other
        tensors satisfy the semi-unitary condition — which is essential for
        numerically stable TDVP sweeps. The physical reduced density matrix
-       :math:`\rho_S(t) = \varrho_{\vec{0}}(t)` is recovered from the ``Model``
+       :math:`\rho_\textrm{S}(t) = \varrho_{\vec{0}}(t)` is recovered from the ``Model``
        by contracting all bexciton indices at :math:`n_k = 0`.
 
 .. _layer2-operator:
@@ -360,7 +361,7 @@ a checkpoint).
 tenso.operator.sparse — Generator & Propagator
 ------------------------------------------------
 
-This module encodes :math:`L(t)` in SoP form and implements its action on a
+This module encodes :math:`\mathcal{L}(t)` in SoP form and implements its action on a
 :class:`Model`. Both classes work together: ``SparseSPO`` describes *what*
 operator to apply; ``SparsePropagator`` describes *how* and *when* to apply it.
 
@@ -370,19 +371,20 @@ operator to apply; ``SparsePropagator`` describes *how* and *when* to apply it.
 
    * - Class
      - Description
-   * - :class:`SparseSPO`
-     - Encodes :math:`L(t)` in Sum-of-Product form as a **list of dictionaries**.
-       Each dictionary represents one product term
+   * - :class:`~tenso.operator.sparse.SparseSPO`
+     - Encodes :math:`\mathcal{L}(t)` in Sum-of-Product form as a **list of
+       dictionaries**. Each dictionary represents one product term
        :math:`h^>_m \otimes h^<_m \otimes h^{(1)}_m \otimes \cdots \otimes h^{(K)}_m`:
        keys are degree-of-freedom names (system ket ``>``; system bra ``<``; or
        bexciton index :math:`k`) matching those used in the ``Frame``, and values
        are the corresponding local operator matrices. Terms acting on only a subset
        of indices are handled naturally — missing keys are treated as identity
        operators. This sparse representation avoids explicitly constructing the
-       full :math:`M^2 N^K \times M^2 N^K` generator matrix.
-   * - :class:`SparsePropagator`
+       full :math:`M^2 N^K \times M^2 N^K` Liouvillian matrix.
+   * - :class:`~tenso.operator.sparse.SparsePropagator`
      - The **Dirac–Frenkel TDVP propagator**. Given a
-       :class:`~tenso.state.puremodel.Model` and a :class:`SparseSPO`, it
+       :class:`~tenso.state.puremodel.Model` and a
+       :class:`~tenso.operator.sparse.SparseSPO`, it
        constructs all intermediate quantities needed for the TDVP sweep: the
        compressed environment matrices :math:`f^{(s)}_m(t)` (computed leaf-to-root)
        and, for direct integration, the regularized inverse matrices
@@ -395,14 +397,15 @@ What is the Dirac–Frenkel TDVP and why use it?
 The **Dirac–Frenkel Time-Dependent Variational Principle (TDVP)** determines the
 optimal equations of motion for the core tensors :math:`A^{(0)}(t)` and
 :math:`\{U^{(s)}(t)\}` by requiring that the residual
-:math:`L(t)|\Omega(t)\rangle - \frac{d}{dt}|\Omega(t)\rangle` is orthogonal to
-all allowed variations of :math:`|\Omega(t)\rangle` within the TTN ansatz:
+:math:`\mathcal{L}(t)|\Omega(t)\rangle - \frac{d}{dt}|\Omega(t)\rangle` is
+orthogonal to all allowed variations of :math:`|\Omega(t)\rangle` within the
+TTN ansatz:
 
 .. math::
 
    \sum_{ij,n_1\cdots n_K}
-   [\delta\Omega(t)]^*_{ij,n_1\cdots n_K}
-   \left[\left(L(t) - \frac{\mathrm{d}}{\mathrm{d}t}\right)\Omega(t)\right]_{ij,n_1\cdots n_K}
+   [\delta\Omega(t)]^*_{ijn_1\cdots n_K}
+   \left[\left(\mathcal{L}(t) - \frac{\mathrm{d}}{\mathrm{d}t}\right)\Omega(t)\right]_{ijn_1\cdots n_K}
    = 0.
 
 This projection guarantees that the propagated state remains on the TTN manifold
@@ -432,7 +435,7 @@ between them involves tradeoffs in memory, accuracy, and computational cost.
    The singularity resolves after a brief initial transient (typically :math:`<2` fs).
 
 **PS1 — Fixed-rank Projector-Splitting**
-   Based on a second-order symmetric Lie–Trotter splitting of :math:`L(t)`.
+   Based on a second-order symmetric Lie–Trotter splitting of :math:`\mathcal{L}(t)`.
    Instead of propagating all tensors simultaneously, the algorithm sweeps through
    the TTN sequentially: at each split-step, the root is moved to the next tensor
    via SVD, and that tensor is propagated in isolation using Eq. (43) of the
@@ -462,7 +465,7 @@ between them involves tradeoffs in memory, accuracy, and computational cost.
    :widths: 22 26 26 26
    :header-rows: 1
 
-   * -
+   * - Property
      - Direct Integration
      - PS1
      - PS2
@@ -509,37 +512,40 @@ HEOM is an exact, non-perturbative method for simulating the open quantum dynami
 of driven quantum systems coupled to bosonic thermal baths. ``TENSO`` implements
 the **bexcitonic generalization** of HEOM, which provides a unified framework for
 all HEOM variants and admits arbitrary time-dependence in the system Hamiltonian
-:math:`H_S(t)`.
+:math:`H_\textrm{S}(t)`.
 
 **Physical background.** The influence of a thermal bath on the system is
 completely characterized by its Bath Correlation Function (BCF):
 
 .. math::
 
-   C(t) = \sum_{k=1}^{K} c_k\, e^{\gamma_k t},
+   C(t) = \sum_{k=1}^{K} c_k\, e^{\gamma_k t}, \qquad
+   C^*(t) = \sum_{k=1}^{K} \bar{c}_k\, e^{\gamma_k t},
 
-where :math:`c_k`, :math:`\gamma_k \in \mathbb{C}` are obtained by decomposing
-the spectral density :math:`J(\omega)` via Padé or Matsubara expansion of the
-thermal factor :math:`\coth(\omega/2k_BT)`. Each :math:`k` in this sum defines
-a **feature** of the bath. The number of features :math:`K` grows with the
-complexity of :math:`J(\omega)` and with the number of low-temperature correction
-terms required. The bexcitonic picture associates a fictitious bosonic
-quasiparticle — a *bexciton* of label :math:`k` — with each feature. The bexciton
-creation and annihilation operators :math:`\hat{\alpha}^\dagger_k`,
-:math:`\hat{\alpha}_k` connect the ADMs in the hierarchy and give the bexcitonic
-master equation its ladder structure. The full bexcitonic equation of motion is
+where :math:`c_k`, :math:`\bar{c}_k`, :math:`\gamma_k \in \mathbb{C}` are
+obtained by decomposing the spectral density :math:`J(\omega)` via Padé or
+Matsubara expansion of the Bose–Einstein factor
+:math:`f_\textrm{BE}(\beta\omega) = (1 - e^{-\beta\omega})^{-1}`.
+Each :math:`k` in this sum defines a **feature** of the bath. The number of
+features :math:`K` grows with the complexity of :math:`J(\omega)` and with the
+number of low-temperature correction terms required. The bexcitonic picture
+associates a fictitious bosonic quasiparticle — a *bexciton* of label :math:`k`
+— with each feature. The bexciton creation and annihilation operators
+:math:`\hat{\alpha}^\dagger_k`, :math:`\hat{\alpha}_k` connect the ADMs in the
+hierarchy and give the bexcitonic master equation its ladder structure.
+The full bexcitonic equation of motion is
 
 .. math::
 
    \frac{\mathrm{d}}{\mathrm{d}t}|\Omega(t)\rangle
-   = \left(-iH_S^\times(t) + \sum_{k=1}^{K} D_k\right)|\Omega(t)\rangle,
+   = \left(-iH_\textrm{S}^\times(t) + \sum_{k=1}^{K} \mathcal{D}_k\right)|\Omega(t)\rangle,
 
-where :math:`D_k = \gamma_k\hat{\alpha}^\dagger_k\hat{\alpha}_k
-+ (c_k Q_S^> - \bar{c}_k Q_S^<)\hat{z}_k^{-1}\hat{\alpha}^\dagger_k
-- Q_S^\times\hat{\alpha}_k\hat{z}_k` captures the dissipation due to the
-:math:`k`-th bath feature and :math:`\hat{z}_k` is an invertible metric operator.
-The standard HEOM is recovered as the specific case with number representation
-and :math:`\hat{z}_k = i(\hat{\alpha}^\dagger_k\hat{\alpha}_k)^{-1/2}`.
+where :math:`\mathcal{D}_k = \gamma_k\hat{\alpha}^\dagger_k\hat{\alpha}_k
++ (c_k Q_\textrm{S}^> - \bar{c}_k Q_\textrm{S}^<)\hat{z}_k^{-1}\hat{\alpha}^\dagger_k
+- Q_\textrm{S}^\times\hat{\alpha}_k\hat{z}_k` is the dissipator associated with
+the :math:`k`-th bath feature and :math:`\hat{z}_k` is an invertible metric
+operator. The standard HEOM is recovered as the specific case with number
+representation and :math:`\hat{z}_k = i(\hat{\alpha}^\dagger_k\hat{\alpha}_k)^{-1/2}`.
 
 Two submodules are provided depending on the number of baths:
 
@@ -557,7 +563,7 @@ Two submodules are provided depending on the number of baths:
        :math:`\mathcal{O}(M^2 R + KNR(N+R))` by the TTN.
    * - ``tenso.heom.meom``
      - TTN-HEOM for a system coupled to **multiple independent baths** through
-       system operators :math:`\{Q_S^{(d)}\}` that need not commute. Implements
+       system operators :math:`\{Q_\textrm{S}^{(d)}\}` that need not commute. Implements
        the extended multi-bath hierarchy and its SoP generator.
 
 **Key classes** (available in both ``eom`` and ``meom``):
@@ -568,17 +574,17 @@ Two submodules are provided depending on the number of baths:
 
    * - Class
      - Description
-   * - :class:`Hierarchy`
+   * - :class:`~tenso.heom.eom.Hierarchy`
      - Central data structure for TTN-HEOM. Given the BCF parameters
        :math:`\{c_k, \bar{c}_k, \gamma_k\}_{k=1}^K` and the truncation depths
        :math:`\{N_k\}`, it constructs the full bexcitonic operator structure,
-       generates the SoP representation of the generator
-       :math:`-iH_S^\times(t) + \sum_k D_k`, and initializes the root tensor
-       :math:`A^{(0)}(0)` and semi-unitary tensors :math:`\{U^{(s)}(0)\}` with
-       the correct initial conditions for a separable system–bath state. Also
-       provides methods to extract :math:`\rho_S(t)` from the EDO via the
-       recursive contraction
-       :math:`[\rho_S(t)]_{ij} = \sum_{a_1} [A^{(0)}(t)]_{ij,a_1}\,[t^{(1)}(t)]_{a_1}`.
+       generates the SoP representation of the Liouvillian
+       :math:`-iH_\textrm{S}^\times(t) + \sum_k \mathcal{D}_k`, and initializes
+       the root tensor :math:`A^{(0)}(0)` and semi-unitary tensors
+       :math:`\{U^{(s)}(0)\}` with the correct initial conditions for a separable
+       system–bath state. Also provides methods to extract
+       :math:`\rho_\textrm{S}(t)` from the EDO via the recursive contraction
+       :math:`[\rho_\textrm{S}(t)]_{ij} = \sum_{a_1} [A^{(0)}(t)]_{ij,a_1}\,[t^{(1)}(t)]_{a_1}`.
    * - :class:`FrameFactory`
      - Constructs the TTN topology for the EDO :math:`|\Omega(t)\rangle`.
        Supports two canonical topologies: the **balanced tensor tree** — which
@@ -626,19 +632,23 @@ tensor network construction, hierarchy generation, and propagator setup.
    * - Object / Function
      - Location
      - Purpose
-   * - :func:`system_multibath`
+   * - :func:`~tenso.prototypes.heom.system_multibath`
      - ``prototypes.heom``
-     - Primary simulation entry point for HEOM calculations. Sets up the system
-       state, bath models, TTN topology, and propagator in a single call.
-       Accepts physical bath and propagation parameters directly.
-   * - :func:`gen_bcf`
+     - Primary simulation entry point for spin-boson HEOM calculations. Sets up
+       the system state, bath model, TTN topology, and propagator in a single call,
+       and returns a **generator** that advances the state one time step per
+       iteration. Results are written to a file specified by ``fname``.
+   * - :func:`~tenso.prototypes.bath.gen_bcf`
      - ``prototypes.bath``
      - Generates the BCF decomposition parameters :math:`\{c_k, \bar{c}_k, \gamma_k\}_{k=1}^K`
-       from a given spectral density :math:`J(\omega)`. Supports Drude–Lorentz and
-       underdamped Brownian oscillator models with either Padé or Matsubara expansion
-       of the thermal factor :math:`\coth(\omega/2k_BT)`, including an arbitrary
-       number of low-temperature correction terms. The output is directly compatible
-       with the ``Hierarchy`` constructor.
+       from a given spectral density :math:`J(\omega)`. Accepts Drude–Lorentz
+       parameters (``re_d``, ``width_d``) and underdamped Brownian oscillator
+       parameters (``freq_b``, ``re_b``, ``width_b``), with either Padé or
+       Matsubara expansion of the Bose–Einstein factor
+       :math:`f_\textrm{BE}(\beta\omega)`
+       via ``decomposition_method`` and ``n_ltc`` low-temperature correction
+       terms. The output is directly compatible with the ``spin_boson`` and
+       ``Hierarchy`` constructors.
    * - ``default_parameters``
      - ``prototypes.default_parameters``
      - Stores default values for coupling strengths, temperature, cutoff
@@ -678,15 +688,18 @@ layers.
      - Implements the :class:`Correlation` object responsible for computing and
        storing the BCF :math:`C(t) = \sum_{k=1}^K c_k e^{\gamma_k t}` — the
        central input quantity for constructing the bexcitonic dissipators
-       :math:`\{D_k\}` and the HEOM hierarchy.
+       :math:`\{\mathcal{D}_k\}` and the HEOM hierarchy.
    * - ``tenso.bath.distribution``
-     - Contains the Padé and Matsubara decompositions of the Bose-Einstein
-       factor :math:`\coth(\omega/2k_BT)` required to express :math:`C(t)` as
-       a finite sum of exponentials at finite temperature, including
-       low-temperature correction terms.
+     - Contains the Padé and Matsubara decompositions of the Bose–Einstein
+       factor :math:`f_\textrm{BE}(\beta\omega) = (1 - e^{-\beta\omega})^{-1}`
+       required to express :math:`C(t)` as a finite sum of exponentials at
+       finite temperature, including low-temperature correction terms.
    * - ``tenso.bath.sd``
      - Defines spectral density functions :math:`J(\omega)`: Drude–Lorentz
-       :math:`J_\text{DL}(\omega) = \frac{2\lambda_0}{\pi}\frac{\gamma_0\omega}{\omega^2+\gamma_0^2}`,
-       underdamped Brownian oscillator
-       :math:`J_B^{(b)}(\omega) = \frac{4\lambda_b}{\pi}\frac{\gamma_b\omega_b^2\omega}{(\omega^2-\omega_b^2)^2+4\gamma_b^2\omega^2}`,
-       and support for user-defined forms.
+       :math:`J_\textrm{DL}(\omega) = \frac{2\lambda}{\pi}\frac{\omega_c\,\omega}{\omega^2+\omega_c^2}`
+       with reorganization energy :math:`\lambda` and cutoff frequency
+       :math:`\omega_c`; underdamped Brownian oscillator
+       :math:`J_\textrm{BO}^{(b)}(\omega) = \frac{4\lambda}{\pi}\frac{\eta\,\omega_0^2\,\omega}{(\omega^2-\omega_0^2)^2+4\eta^2\omega^2}`
+       with reorganization energy :math:`\lambda`, natural frequency
+       :math:`\omega_0`, and damping rate :math:`\eta`; and support for
+       user-defined forms.

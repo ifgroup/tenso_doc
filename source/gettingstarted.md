@@ -10,174 +10,285 @@ explore the [examples](examples/pure_dephasing.ipynb) and the
 A TENSO simulation always follows the same four steps:
 
 ```
-1. Define the system Hamiltonian H_S and the coupling operator Q_S
-2. Define the bath via its spectral density J(ω) → BCF parameters {c_k, γ_k}
-3. Set propagation parameters (TTN topology, rank, depth, time grid)
-4. Run the simulation and extract ρ_S(t)
+1. Define the bath correlation function C(t) and decompose it into features
+2. Define the system Hamiltonian H_S, coupling operator Q_S, and initial state ρ_0
+3. Set propagation parameters (TTN topology, rank, depth, propagation scheme)
+4. Iterate the propagator and collect results
 ```
 
-All four steps are handled by a single call to
-`tenso.prototypes.heom.system_multibath` for most common problems.
-The sections below explain each step and then show a complete example.
+All four steps are handled by `gen_bcf` and `system_multibath` from
+`tenso.prototypes`. The sections below explain each step and show a
+complete working example.
 
 ---
 
-## Step 1 — The system Hamiltonian
+## Step 1 — The bath and its BCF decomposition
 
-The system is a finite-dimensional quantum system described by an
-$M \times M$ Hamiltonian matrix $H_S$ (and optionally a time-dependent
-drive). For a two-level system (qubit):
-
-$$
-H_S = \frac{E}{2}(|1\rangle\langle 1| - |0\rangle\langle 0|)
-     + V(|1\rangle\langle 0| + |0\rangle\langle 1|)
-$$
-
-where $E$ is the energy gap and $V$ is the electronic coupling.
-In TENSO this is passed as a NumPy or PyTorch matrix.
-
-## Step 2 — The bath and its correlation function
-
-The bath is characterized by its **spectral density** $J(\omega)$.
-TENSO supports two standard models out of the box:
-
-**Drude–Lorentz** (Ohmic bath with Lorentzian cutoff):
+TENSO treats environments described as a collection of harmonic oscillators
+coupled to the system via
 
 $$
-J_\text{DL}(\omega) = \frac{2\lambda_0}{\pi}\frac{\gamma_0\,\omega}{\omega^2+\gamma_0^2}
+H_\textrm{SB} = Q_\textrm{S} \otimes X_\textrm{B},
+\qquad X_\textrm{B} = \sum_j c_j x_j,
 $$
 
-**Underdamped Brownian oscillator** (discrete vibrational mode):
+where $Q_\textrm{S}$ is the system coupling operator and $X_\textrm{B}$ is
+a collective bath coordinate. For such environments, all dynamical
+information about the bath is contained in the **Bath Correlation Function
+(BCF)**:
 
 $$
-J_B^{(b)}(\omega) = \frac{4\lambda_b}{\pi}
-\frac{\gamma_b\,\omega_b^2\,\omega}{(\omega^2-\omega_b^2)^2+4\gamma_b^2\omega^2}
+C(t) = \langle \tilde{X}_\textrm{B}(t)\,\tilde{X}_\textrm{B}(0)\rangle
 $$
 
-A realistic bath can be a **composite** of these two, for example one
-Drude–Lorentz component for the solvent and several Brownian oscillators
-for intramolecular vibrations.
-
-The helper function `gen_bcf` converts $J(\omega)$ into the BCF
-decomposition parameters $\{c_k, \bar{c}_k, \gamma_k\}_{k=1}^K$ that
-TENSO needs internally:
+Using the residue theorem, the BCF is decomposed exactly into a sum of
+$K$ complex decaying exponentials — the **features**:
 
 $$
-C(t) = \sum_{k=1}^{K} c_k\, e^{\gamma_k t}
+C(t) = \sum_{k=1}^{K} c_k\, e^{\gamma_k t}, \qquad
+C^*(t) = \sum_{k=1}^{K} \bar{c}_k\, e^{\gamma_k t},
+\qquad c_k,\,\bar{c}_k,\,\gamma_k \in \mathbb{C}.
 $$
 
-```{tip}
-The number of features $K$ grows with the complexity of $J(\omega)$
-and with the number of low-temperature correction terms.
-A typical calculation at room temperature with one Drude–Lorentz and
-eight Brownian oscillators requires $K = 20$ features.
+`gen_bcf` performs this decomposition from a spectral density
+$J(\omega)$ built from **Drude–Lorentz (DL)** and/or
+**Brownian oscillator (BO)** components:
+
+$$
+J(\omega) = J_\textrm{DL}(\omega) + \sum_b J_\textrm{BO}^{(b)}(\omega)
+$$
+
+**Drude–Lorentz** — Ohmic bath with reorganization energy $\lambda$ and
+cutoff frequency $\omega_c$:
+
+$$
+J_\textrm{DL}(\omega) = \frac{2\lambda}{\pi}
+\frac{\omega_c\,\omega}{\omega^2 + \omega_c^2}
+$$
+
+Each DL component contributes **one feature** (a simple decaying
+exponential with timescale $\omega_c^{-1}$).
+
+**Brownian oscillator** — discrete vibrational mode with reorganization
+energy $\lambda$, natural frequency $\omega_0$, and damping rate $\eta$:
+
+$$
+J_\textrm{BO}^{(b)}(\omega) = \frac{4\lambda}{\pi}
+\frac{\eta\,\omega_0^2\,\omega}
+{(\omega^2 - \omega_0^2)^2 + 4\eta^2\omega^2}
+$$
+
+Each BO component contributes **two features** (oscillatory-decaying
+exponentials).
+
+The total number of features $K$ also grows with the number of
+**low-temperature correction (LTC)** terms required to accurately
+capture the Bose–Einstein factor $f_\textrm{BE}(\beta\omega)$ at finite
+temperature.
+
+```python
+from tenso.prototypes.bath import gen_bcf
+
+bath = gen_bcf(
+    re_d    = [540],    # λ for DL component (cm⁻¹)
+    width_d = [70],     # ωc for DL component (cm⁻¹)
+    freq_b  = [1663],   # ω0 for BO component (cm⁻¹)
+    re_b    = [330],    # λ  for BO component (cm⁻¹)
+    width_b = [4],      # η  for BO component (cm⁻¹)
+    temperature          = 300,    # K
+    decomposition_method = 'Pade', # 'Pade' or 'Matsubara'
+    n_ltc                = 1,      # number of low-temperature correction terms
+)
 ```
 
-## Step 3 — Propagation parameters
+```{tip}
+The total number of features $K$ determines the size of the HEOM
+hierarchy. A DL component contributes 1 feature, each BO component
+contributes 2, and each LTC term adds 1 more. Increase `n_ltc` if
+the long-time thermalization is not reproduced correctly.
+Standard HEOM methods are only feasible for $K \lesssim 5$; TENSO's
+TTN compression makes large $K$ tractable.
+```
 
-The key numerical parameters are:
+---
 
-| Parameter | Symbol | Typical value | Effect |
-|---|---|---|---|
-| Bexciton depth | $N_k$ | 10–20 | Truncation of each bexciton ladder; increase until converged |
-| Bond rank | $R$ | 20–80 | TTN compression; increase until converged |
-| TTN topology | — | balanced tree | Balanced tree recommended for large $K$ |
-| Propagator | — | PS2 → direct | PS2 determines ranks, then direct integration takes over |
-| Time grid | $t_\text{max}, \Delta t$ | problem-dependent | Adaptive step size with `dopri5` |
+## Step 2 — The system
 
-## Step 4 — Running a simulation
+The system is an $M$-state quantum system described by:
 
-The recommended entry point is `system_multibath` from
-`tenso.prototypes.heom`. Here is a complete minimal example:
+- `sys_ham` — the $M \times M$ Hamiltonian $H_S$ (complex128 NumPy array)
+- `sys_op` — the $M \times M$ coupling operator $Q_\textrm{S}$ (complex128)
+- `init_rdo` — the $M \times M$ initial reduced density operator $\rho_\textrm{S}(0)$
+
+For the spin-boson model with energy gap $\varepsilon$ and tunneling $\Delta$:
+
+$$
+H_S = \frac{\varepsilon}{2}\,\sigma_z + \Delta\,\sigma_x
+$$
+
+The bath couples to the system through $Q_\textrm{S} = \sigma_x$.
 
 ```python
 import numpy as np
-from tenso.prototypes.heom import system_multibath
-from tenso.prototypes.bath import gen_bcf
 
-# ── System ────────────────────────────────────────────────────────────────────
-# Two-level system: energy gap E = 1000 cm⁻¹, coupling V = 1000 cm⁻¹
-E = 1000.0   # cm⁻¹
-V = 1000.0   # cm⁻¹
+eps   = 1500.0   # cm⁻¹  energy gap ε
+delta =  300.0   # cm⁻¹  tunneling Δ
 
-H_S = np.array([[E / 2,    V   ],
-                [  V,   -E / 2 ]])
+sys_ham = np.array([[ eps/2,  delta],
+                    [ delta, -eps/2]], dtype=np.complex128)
 
-# Coupling operator Q_S = (1/2)(|1><1| - |0><0|)
-Q_S = np.array([[0.5,  0.0],
-                [0.0, -0.5]])
+# Q_S — system-bath coupling operator
+sys_op  = np.array([[0.0, 1.0],
+                    [1.0, 0.0]], dtype=np.complex128)
 
-# Initial state: pure superposition (|0> + |1>) / sqrt(2)
-rho0 = np.array([[0.5, 0.5],
-                 [0.5, 0.5]])
+# Initial state: |↑⟩ (excited state)
+wfn      = np.array([1.0, 0.0], dtype=np.complex128)
+init_rdo = np.outer(wfn, wfn.conj())
+```
 
-# ── Bath ──────────────────────────────────────────────────────────────────────
-# Single Drude–Lorentz bath at room temperature
-temperature = 300.0   # K
-lambda_0    = 715.73  # cm⁻¹  (reorganization energy)
-gamma_0     =  54.45  # cm⁻¹  (bath relaxation rate)
+---
 
-bcf_params = gen_bcf(
-    model       = 'drude-lorentz',
-    lambda_     = lambda_0,
-    gamma       = gamma_0,
-    temperature = temperature,
-    n_pade      = 3,          # number of low-temperature correction terms
+## Step 3 — Propagation parameters
+
+The key numerical parameters for `spin_boson` are:
+
+| Parameter | Argument | Typical value | Effect |
+|---|---|---|---|
+| Bexciton depth | `dim` | 10–20 | Truncation depth $N_k$ for each bexciton ladder; increase until converged |
+| Bond rank | `rank` | 5–32+ | TTN bond dimension $R$; increase until converged |
+| TTN topology | `frame_method` | `'tree2'` or `'train'` | Balanced tree (`tree2`) recommended for large $K$ |
+| Propagation method | `ps_method` | `'ps1'` or `'ps2'` | PS2 adapts $R$ automatically; PS1 keeps it fixed |
+| Time step | `step_time` | 0.05 fs | Integration step size $\Delta t$ |
+| End time | `end_time` | problem-dependent | Total propagation time in fs |
+| Output file | `fname` | any string | Results written to `{fname}.npz` |
+
+The memory cost of the EDO without compression scales as
+$\mathcal{O}(M^2 N^K)$. TENSO's TTN reduces this to
+$\mathcal{O}(M^2 R + KNR(N+R))$, eliminating the exponential
+dependence on $K$.
+
+```{tip}
+`frame_method='tree2'` builds a balanced binary tree, minimizing the
+average path from the system root $A^{(0)}$ to each bexciton index to
+$\mathcal{O}(\log K)$, giving more compact TTNs for large $K$.
+`frame_method='train'` uses a tensor train (MPS) topology with path
+length $\mathcal{O}(K)$, which is simpler but less efficient for
+structured baths.
+```
+
+---
+
+## Step 4 — Running a simulation
+
+`spin_boson` returns a **generator** that advances the simulation one time
+step per iteration. You drive the propagation with a `for` loop:
+
+```python
+from math import ceil
+from tqdm import tqdm
+from tenso.prototypes.heom import spin_boson
+
+end_time = 100.0   # fs
+dt       = 0.05    # fs
+
+propagator = spin_boson(
+    fname            = 'my_simulation',  # results saved to my_simulation.npz
+    init_rdo         = init_rdo,
+    sys_ham          = sys_ham,
+    sys_op           = sys_op,
+    bath_correlation = bath,
+    dim              = 20,               # bexciton depth N_k
+    end_time         = end_time,
+    step_time        = dt,
+    frame_method     = 'tree2',
+    rank             = 20,
+    stepwise_method  = 'simple',
+    ps_method        = 'ps1',
 )
 
-# ── Propagation ───────────────────────────────────────────────────────────────
-t_output = np.linspace(0, 500, 501)   # fs
+bar = tqdm(propagator, total=ceil(end_time / dt))
+for t in bar:
+    bar.set_description(f't = {t:.2f} fs')
+```
 
-result = system_multibath(
-    H_S        = H_S,
-    Q_S        = [Q_S],
-    rho0       = rho0,
-    bcf_params = [bcf_params],
-    t_output   = t_output,
-    topology   = 'tree',       # 'tree' or 'train'
-    rank       = 40,
-    depth      = 20,
-    propagator = 'ps2-direct', # 'direct', 'ps1', 'ps2', or 'ps2-direct'
-)
+When the loop finishes, the results are saved to `my_simulation.npz`.
+The system density matrix $\rho_\textrm{S}(t) = \varrho_{\vec{0}}(t)$
+is extracted directly — it corresponds to all bexciton indices $n_k = 0$
+in the EDO $|\Omega(t)\rangle$:
 
-# ── Results ───────────────────────────────────────────────────────────────────
-# result.rho_S has shape (len(t_output), M, M)
-rho_t   = result.rho_S
-pop_0   = rho_t[:, 0, 0].real          # population of state |0>
-purity  = np.trace(rho_t @ rho_t, axis1=1, axis2=2).real
-
+```python
 import matplotlib.pyplot as plt
 
-fig, axes = plt.subplots(1, 2, figsize=(10, 4))
-axes[0].plot(t_output, pop_0)
-axes[0].set(xlabel='Time (fs)', ylabel='Population of |0⟩')
-axes[1].plot(t_output, purity)
-axes[1].set(xlabel='Time (fs)', ylabel='Purity')
-plt.tight_layout()
+data  = np.load('my_simulation.npz')
+t     = data['time']
+rho_t = data['rdo']              # shape (n_steps, M, M)
+
+pop_excited = rho_t[:, 0, 0].real   # ρ_S(t)_{00}
+
+plt.plot(t, pop_excited)
+plt.xlabel('Time (fs)')
+plt.ylabel(r'$[\rho_\mathrm{S}(t)]_{00}$')
 plt.show()
 ```
+
+---
 
 ## Checking convergence
 
 Always verify convergence with respect to:
 
-1. **Bexciton depth** $N_k$ — increase until the dynamics does not change.
-2. **Bond rank** $R$ — increase until the dynamics does not change.
-3. **Number of low-temperature correction terms** — increase `n_pade` until
-   the long-time thermalization is correct.
+1. **Bexciton depth** `dim` ($N_k$) — the EDO has memory cost
+   $\mathcal{O}(M^2 N^K)$; increase `dim` until results are stable.
+2. **Bond rank** `rank` ($R$) — the TTN has cost
+   $\mathcal{O}(M^2 R + KNR(N+R))$; increase `rank` until stable.
+3. **Low-temperature corrections** `n_ltc` — increase until the
+   long-time thermalization $\rho_\textrm{S}(t \to \infty)$ is correct.
 
-```{tip}
-Use the **PS2 propagator** first: it determines the required rank
-automatically by adaptively growing the TTN. Once the adaptive rank
-stabilizes, you know the minimum rank needed and can switch to
-`ps2-direct` or `direct` for efficiency.
+A typical rank convergence sweep compares multiple values of `rank`
+and both TTN topologies:
+
+```python
+from math import ceil
+from tqdm import tqdm
+from tenso.prototypes.heom import spin_boson
+from tenso.prototypes.bath import gen_bcf
+
+bath = gen_bcf(
+    re_d=[540], width_d=[70],
+    freq_b=[1663], re_b=[330], width_b=[4],
+    temperature=300, decomposition_method='Pade', n_ltc=1,
+)
+
+ranks         = [5, 10, 15, 20, 25, 32]
+frame_methods = ['train', 'tree2']
+
+for method in frame_methods:
+    for rank in ranks:
+        fname = f'{method}_rank{rank}'
+        propagator = spin_boson(
+            fname=fname, init_rdo=init_rdo,
+            sys_ham=sys_ham, sys_op=sys_op,
+            bath_correlation=bath,
+            dim=20, end_time=100.0, step_time=0.05,
+            frame_method=method, rank=rank,
+            stepwise_method='simple', ps_method='ps1',
+        )
+        bar = tqdm(propagator, total=ceil(100.0 / 0.05),
+                   desc=f'{method} rank={rank}')
+        for t in bar:
+            bar.set_description(f'{method} rank={rank} @{t:.2f} fs')
 ```
+
+This produces one `.npz` file per `(method, rank)` pair, which you can
+overlay to verify that $\rho_\textrm{S}(t)$ has converged.
+
+---
 
 ## Next steps
 
 - Explore the worked **[Examples](examples/pure_dephasing.ipynb)** for
   pure dephasing, spin-boson models, structured baths, and multi-site systems.
 - Read the **[Code Structure](structure.rst)** page to understand the
-  four-layer architecture and the key classes.
-- Consult the **[API Reference](autoapi/index.rst)** for the full
-  documentation of all functions and classes.
+  four-layer architecture and all key classes.
+- Consult the **[API Reference](autoapi/index.rst)** for full documentation
+  of all functions and classes.

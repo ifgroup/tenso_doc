@@ -1,6 +1,6 @@
 # Getting Started
 
-This page walks you through a minimal TENSO simulation from scratch.
+This page walks you through a minimal TENSO simulation.
 After reading it you will understand the basic workflow and be ready to
 explore the [examples](examples/pure_dephasing.ipynb) and the
 [code structure](structure.rst).
@@ -12,8 +12,8 @@ A TENSO simulation always follows the same four steps:
 ```
 1. Define the bath correlation function C(t) and decompose it into features
 2. Define the system Hamiltonian H_S, coupling operator Q_S, and initial state ρ_0
-3. Set propagation parameters (TTN topology, rank, depth, propagation scheme)
-4. Iterate the propagator and collect results
+3. Set propagation parameters (TTN topology, rank, depth, time grid)
+4. Propagate the system and collect results
 ```
 
 All four steps are handled by `gen_bcf` and `system_multibath` from
@@ -25,7 +25,7 @@ complete working example.
 ## Step 1 — The bath and its BCF decomposition
 
 TENSO treats environments described as a collection of harmonic oscillators
-coupled to the system via
+coupled to the system via the system-bath interaction Hamiltonian
 
 $$
 H_\textrm{SB} = Q_\textrm{S} \otimes X_\textrm{B},
@@ -55,14 +55,15 @@ $J(\omega)$ built from **Drude–Lorentz (DL)** and/or
 **Brownian oscillator (BO)** components:
 
 $$
-J(\omega) = J_\textrm{DL}(\omega) + \sum_b J_\textrm{BO}^{(b)}(\omega)
+J(\omega) = 
+\sum_a J_\textrm{DL}^{(a)}(\omega) + \sum_b J_\textrm{BO}^{(b)}(\omega)
 $$
 
 **Drude–Lorentz** — Ohmic bath with reorganization energy $\lambda$ and
 cutoff frequency $\omega_c$:
 
 $$
-J_\textrm{DL}(\omega) = \frac{2\lambda}{\pi}
+J_\textrm{DL}^{(a)}(\omega) = \frac{2\lambda}{\pi}
 \frac{\omega_c\,\omega}{\omega^2 + \omega_c^2}
 $$
 
@@ -83,7 +84,7 @@ exponentials).
 
 The total number of features $K$ also grows with the number of
 **low-temperature correction (LTC)** terms required to accurately
-capture the Bose–Einstein factor $f_\textrm{BE}(\beta\omega)$ at finite
+capture the Bose–Einstein distribution $f_\textrm{BE}(\beta\omega)$ at finite
 temperature.
 
 ```python
@@ -102,21 +103,24 @@ bath = gen_bcf(
 ```
 
 ```{tip}
-The total number of features $K$ determines the size of the HEOM
-hierarchy. A DL component contributes 1 feature, each BO component
-contributes 2, and each LTC term adds 1 more. Increase `n_ltc` if
-the long-time thermalization is not reproduced correctly.
-Standard HEOM methods are only feasible for $K \lesssim 5$; TENSO's
-TTN compression makes large $K$ tractable.
+The total number of features $K$ — the number of bexcitons needed
+to represent the bath — determines the size of the HEOM hierarchy.
+It counts as: 1 per DL component + 2 per BO component + 1 per LTC
+term. For the `gen_bcf` call above, $K = 1 + 2 + 1 = 4$.
+Increase `n_ltc` if the long-time thermalization is not reproduced
+correctly.
 ```
 
 ---
 
 ## Step 2 — The system
 
-The system is an $M$-state quantum system described by:
+The system is an $M$-state quantum system, where $M$ is the dimension of its
+Hilbert space. Each auxiliary density matrix (ADM) in the HEOM hierarchy has
+the same $M \times M$ dimension as $\rho_\textrm{S}(t)$, so $M$ directly sets
+the per-matrix cost of the simulation. It is specified through:
 
-- `sys_ham` — the $M \times M$ Hamiltonian $H_S$ (complex128 NumPy array)
+- `sys_ham` — the $M \times M$ Hamiltonian $H_\textrm{S}$ (complex128 NumPy array)
 - `sys_op` — the $M \times M$ coupling operator $Q_\textrm{S}$ (complex128)
 - `init_rdo` — the $M \times M$ initial reduced density operator $\rho_\textrm{S}(0)$
 
@@ -126,7 +130,20 @@ $$
 H_S = \frac{\varepsilon}{2}\,\sigma_z + \Delta\,\sigma_x
 $$
 
-The bath couples to the system through $Q_\textrm{S} = \sigma_x$.
+The bath couples to the system through $Q_\textrm{S} = \sigma_x$. Here, $\sigma_x$ and $\sigma_z$ are the Pauli matrices
+
+$$
+\sigma_z = \begin{bmatrix}
+1 & 0 \\
+0 & -1
+\end{bmatrix}
+,
+\qquad
+\sigma_x = \begin{bmatrix}
+0 & 1 \\
+1 & 0
+\end{bmatrix}
+$$
 
 ```python
 import numpy as np
@@ -150,22 +167,52 @@ init_rdo = np.outer(wfn, wfn.conj())
 
 ## Step 3 — Propagation parameters
 
-The key numerical parameters for `spin_boson` are:
+Four numerical parameters control the accuracy and cost of a TTN-HEOM
+simulation, all traceable to the space complexity formulas derived in the
+paper:
+
+| Symbol | Meaning | Set by | Notes |
+|---|---|---|---|
+| $M$ | Dimension of the system Hilbert space | shape of `sys_ham` | Fixed by the physical model; $M=2$ for a two-level system |
+| $K$ | Number of BCF features (bexcitons) | `gen_bcf` output | 1 per DL + 2 per BO + 1 per LTC term; fixed by the bath model |
+| $N$ | Truncation depth of each bexciton ladder ($N_k$) | `dim` | Each $n_k$ runs from $0$ to $N_k-1$; must be increased until converged |
+| $R$ | Bond rank of the TTN core tensors ($R_s$) | `rank` | Controls compression quality; must be increased until converged |
+
+Without compression, storing the full Extended Density Operator (EDO)
+$|\Omega(t)\rangle$ requires
+
+$$
+\mathcal{O}(M^2 N^K)
+$$
+
+memory — exponential in $K$, the number of bexcitons. For the thymine
+spectral density in the paper (1 DL + 8 BO + 3 LTC = $K=20$ features,
+$N=20$, $M=2$), the uncompressed EDO would require $4.2 \times 10^{26}$
+elements, or roughly 6.7 ronnabytes — far beyond any present computer.
+
+TENSO's TTN decomposition reduces this to
+
+$$
+\mathcal{O}(M^2 R + KNR(N+R))
+$$
+
+which grows only *polynomially* with $K$. Here, the first term $M^2 R$
+is the cost of the root tensor $A^{(0)}$ that holds the uncompressed
+system indices $i,j$; the second term $KNR(N+R)$ is the cost of the $K$
+semi-unitary core tensors $U^{(s)}$, each of dimension $R \times N \times
+(N \text{ or } R)$.
+
+The remaining propagation parameters are:
 
 | Parameter | Argument | Typical value | Effect |
 |---|---|---|---|
-| Bexciton depth | `dim` | 10–20 | Truncation depth $N_k$ for each bexciton ladder; increase until converged |
-| Bond rank | `rank` | 5–32+ | TTN bond dimension $R$; increase until converged |
-| TTN topology | `frame_method` | `'tree2'` or `'train'` | Balanced tree (`tree2`) recommended for large $K$ |
-| Propagation method | `ps_method` | `'ps1'` or `'ps2'` | PS2 adapts $R$ automatically; PS1 keeps it fixed |
+| HEOM depth | `dim` | 10–20 | Sets $N_k$ for each of the $K$ bexciton ladders |
+| Bond rank | `rank` | 5–60+ | Sets $R_s$ for each of the $K-1$ TTN bonds |
+| TTN topology | `frame_method` | `'tree2'` or `'train'` | Balanced tree (`tree2`) minimizes the average path from root to each bexciton to $\mathcal{O}(\log K)$, reducing cost vs. tensor train $\mathcal{O}(K)$ for large $K$ |
+| Propagation method | `ps_method` | `'ps1'` , `'ps2'` or `'vmf'` | PS2 adapts $R$ automatically during propagation; PS1 keeps $R$ fixed |
 | Time step | `step_time` | 0.05 fs | Integration step size $\Delta t$ |
 | End time | `end_time` | problem-dependent | Total propagation time in fs |
-| Output file | `fname` | any string | Results written to `{fname}.npz` |
-
-The memory cost of the EDO without compression scales as
-$\mathcal{O}(M^2 N^K)$. TENSO's TTN reduces this to
-$\mathcal{O}(M^2 R + KNR(N+R))$, eliminating the exponential
-dependence on $K$.
+| Output file | `fname` | any string | Prefix for output files: `{fname}.dat.log`, `{fname}.debug.log`, `{fname}.pt` |
 
 ```{tip}
 `frame_method='tree2'` builds a balanced binary tree, minimizing the
@@ -180,7 +227,7 @@ structured baths.
 
 ## Step 4 — Running a simulation
 
-`spin_boson` returns a **generator** that advances the simulation one time
+`system_multibath` returns the dynamics **generator** that advances the simulation one time
 step per iteration. You drive the propagation with a `for` loop:
 
 ```python
@@ -192,12 +239,12 @@ end_time = 100.0   # fs
 dt       = 0.05    # fs
 
 propagator = spin_boson(
-    fname            = 'my_simulation',  # results saved to my_simulation.npz
+    fname            = 'out',        # output prefix → out.dat.log, out.debug.log, out.pt
     init_rdo         = init_rdo,
     sys_ham          = sys_ham,
     sys_op           = sys_op,
     bath_correlation = bath,
-    dim              = 20,               # bexciton depth N_k
+    dim              = 20,           # bexciton depth N_k
     end_time         = end_time,
     step_time        = dt,
     frame_method     = 'tree2',
@@ -211,41 +258,72 @@ for t in bar:
     bar.set_description(f't = {t:.2f} fs')
 ```
 
-When the loop finishes, the results are saved to `my_simulation.npz`.
+When the loop finishes, three output files are written:
+
+| File | Contents |
+|---|---|
+| `out.dat.log` | Space-separated text file (complex128). Each row is one time step with 5 columns: `t`, `[ρ_S]_11`, `ρ_eg`, `ρ_ge`, `[ρ_S]_00`. |
+| `out.debug.log` | Human-readable log of convergence diagnostics printed during the run. |
+| `out.pt` | PyTorch checkpoint of the full TTN state $|\Omega(t)\rangle$ at the final time step, loadable with `torch.load`. |
+
 The system density matrix $\rho_\textrm{S}(t) = \varrho_{\vec{0}}(t)$
-is extracted directly — it corresponds to all bexciton indices $n_k = 0$
-in the EDO $|\Omega(t)\rangle$:
+is read from `out.dat.log` using `numpy.loadtxt`:
 
 ```python
+import numpy as np
 import matplotlib.pyplot as plt
 
-data  = np.load('my_simulation.npz')
-t     = data['time']
-rho_t = data['rdo']              # shape (n_steps, M, M)
+data = np.loadtxt('out.dat.log', dtype=np.complex128)
 
-pop_excited = rho_t[:, 0, 0].real   # ρ_S(t)_{00}
+t       = data[:, 0].real    # time (fs)
+pop_exc = data[:, 1].real    # excited state population  [ρ_S(t)]_11
+coh_eg  = data[:, 2]         # coherence ρ_eg = [ρ_S(t)]_10  (complex)
+coh_ge  = data[:, 3]         # coherence ρ_ge = [ρ_S(t)]_01 = ρ_eg*  (complex)
+pop_gnd = data[:, 4].real    # ground state population   [ρ_S(t)]_00
 
-plt.plot(t, pop_excited)
-plt.xlabel('Time (fs)')
-plt.ylabel(r'$[\rho_\mathrm{S}(t)]_{00}$')
+fig, axes = plt.subplots(1, 2, figsize=(8, 3))
+
+axes[0].plot(t, pop_exc, label=r'$[\rho_\mathrm{S}]_{11}$')
+axes[0].plot(t, pop_gnd, '--', label=r'$[\rho_\mathrm{S}]_{00}$')
+axes[0].set(xlabel='Time (fs)', ylabel='Population')
+axes[0].legend()
+
+axes[1].plot(t, np.abs(coh_eg), color='tab:purple')
+axes[1].set(xlabel='Time (fs)', ylabel=r'$|\rho_{eg}|$')
+
+plt.tight_layout()
 plt.show()
+```
+
+To reload the full TTN state from the PyTorch checkpoint:
+
+```python
+import torch
+
+state = torch.load('out.pt')
 ```
 
 ---
 
 ## Checking convergence
 
-Always verify convergence with respect to:
+TTN-HEOM converges to the exact HEOM as $N$ and $R$ increase, and to
+the exact open quantum dynamics as $K$ increases. Always verify convergence
+with respect to all three:
 
-1. **Bexciton depth** `dim` ($N_k$) — the EDO has memory cost
-   $\mathcal{O}(M^2 N^K)$; increase `dim` until results are stable.
-2. **Bond rank** `rank` ($R$) — the TTN has cost
-   $\mathcal{O}(M^2 R + KNR(N+R))$; increase `rank` until stable.
-3. **Low-temperature corrections** `n_ltc` — increase until the
-   long-time thermalization $\rho_\textrm{S}(t \to \infty)$ is correct.
+1. **Bexciton depth** `dim` ($N_k$) — each of the $K$ bexciton ladders is
+   truncated at occupation $N_k - 1$. The uncompressed EDO cost is
+   $\mathcal{O}(M^2 N^K)$, so insufficient $N$ leads to a truncation of the
+   hierarchy. Increase `dim` until $\rho_\textrm{S}(t)$ is stable.
+2. **Bond rank** `rank` ($R_s$) — each of the $K-1$ TTN bonds is compressed
+   to dimension $R_s$. The TTN cost is $\mathcal{O}(M^2 R + KNR(N+R))$; 
+   insufficient $R$ means the compression is lossy. Increase `rank` until
+   $\rho_\textrm{S}(t)$ is stable.
+3. **Low-temperature corrections** `n_ltc` (adds to $K$) — each LTC term
+   adds one bexciton to the hierarchy. Increase until the long-time
+   thermalization $\rho_\textrm{S}(t \to \infty)$ is correct.
 
-A typical rank convergence sweep compares multiple values of `rank`
-and both TTN topologies:
+A typical rank convergence sweep compares multiple values of `rank`, you can choose between and n-ary tree, a TT or your custom TTN:
 
 ```python
 from math import ceil
@@ -279,8 +357,25 @@ for method in frame_methods:
             bar.set_description(f'{method} rank={rank} @{t:.2f} fs')
 ```
 
-This produces one `.npz` file per `(method, rank)` pair, which you can
-overlay to verify that $\rho_\textrm{S}(t)$ has converged.
+This produces one `{method}_rank{rank}.dat.log` file per `(method, rank)` pair.
+Load and overlay them to verify that $\rho_\textrm{S}(t)$ has converged:
+
+```python
+import numpy as np
+import matplotlib.pyplot as plt
+
+fig, ax = plt.subplots()
+
+for method in ['train', 'tree2']:
+    for rank in [5, 10, 20, 32]:
+        data    = np.loadtxt(f'{method}_rank{rank}.dat.log', dtype=np.complex128)
+        t       = data[:, 0].real
+        pop_exc = data[:, 1].real
+        ax.plot(t, pop_exc, label=f'{method} R={rank}')
+
+ax.set(xlabel='Time (fs)', ylabel=r'$[\rho_\mathrm{S}]_{11}$')
+ax.legend(fontsize=7)
+plt.show()
 
 ---
 

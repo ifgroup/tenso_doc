@@ -9,11 +9,11 @@ of driven quantum systems interacting with structured bosonic thermal
 environments.
 
 TENSO combines the **bexcitonic generalization of the Hierarchical Equations
-of Motion (HEOM)** with a **Tree Tensor Network (TTN)** decomposition,
+of Motion (HEOM)** with a Tree Tensor Network (TTN) decomposition,
 enabling numerically exact simulations for environments of chemical complexity
 — far beyond what is accessible with standard HEOM. The dynamics is propagated
-using equations of motion derived from the **Dirac–Frenkel Time-Dependent
-Variational Principle (TDVP)**, the same principle underlying the
+using equations of motion derived from the Dirac–Frenkel Time-Dependent
+Variational Principle (TDVP), the same principle underlying the
 ML-MCTDH method for closed quantum systems.
 
 .. grid:: 2
@@ -23,7 +23,7 @@ ML-MCTDH method for closed quantum systems.
       :link: gettingstarted
       :link-type: doc
 
-      New to TENSO? Start here for a minimal working example and an overview
+      Start here for a minimal working example and an overview
       of the main workflow.
 
    .. grid-item-card:: 📦 Installation
@@ -51,15 +51,13 @@ Key features
 
 * **Numerically exact open quantum dynamics** — TTN-HEOM captures the
   non-Markovian dissipative dynamics to all orders in the system–bath
-  interaction, for environments of arbitrary spectral complexity.
+  interaction, for environments with chemical complexity.
 
 * **Tree tensor network compression** — replaces the exponential
-  :math:`\mathcal{O}(M^2 N^K)` memory cost of standard HEOM with a
-  polynomial :math:`\mathcal{O}(M^2 R + KNR(N+R))` TTN representation.
+  memory cost of standard HEOM with a
+  polynomial TTN representation.
 
-* **Three propagation strategies** — direct integration (fixed rank, adaptive
-  time step), PS1 (fixed rank, projector-splitting), and PS2 (adaptive rank,
-  projector-splitting) — which can be combined on-the-fly.
+* **Three propagation strategies** — direct integration, PS1 (one-site projector-splitting), and PS2 (two-site projector-splitting) — which can be changed on-the-fly.
 
 * **Flexible TTN topology** — supports balanced tensor trees, tensor trains,
   and arbitrary user-defined topologies.

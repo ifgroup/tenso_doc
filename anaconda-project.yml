@@ -1,7 +1,6 @@
 name: TENSO_Docs
 description: Documentation for the TENSO project
 
-# Fixed: The field must be 'channels', not 'conda_channels'
 channels:
   - conda-forge
   - defaults
@@ -13,9 +12,12 @@ packages:
   - sphinx-rtd-theme
   - myst-nb
   - sphinx-math-dollar
+  - sphinx-design
 
 commands:
   build:
+    unix: rm -rf build && sphinx-build -M html source build
+  rebuild:
     unix: rm -rf build source/autoapi && sphinx-build -M html source build
   serve:
     unix: python -m http.server --directory build/html

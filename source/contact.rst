@@ -21,7 +21,20 @@ at the University of Rochester.
        Departments of Chemistry and Physics & Astronomy,
        University of Rochester.
        `ignacio.franco@rochester.edu <mailto:ignacio.franco@rochester.edu>`_
+       
+   * - **Michelle Anderson**
+     - Postdoctoral Researcher.
+       Departments of Chemistry,
+       University of Rochester.
+       `mander71@ur.rochester.edu <mailto:mander71@ur.rochester.edu>`_
 
+   * - **Juan Camilo Rodriguez**
+     - PhD Student.
+       Departments of Chemistry,
+       University of Rochester.
+       `jcamilor@ur.rochester.edu <mailto:jcamilor@ur.rochester.edu>`_
+       
+       
 Reporting issues
 ----------------
 

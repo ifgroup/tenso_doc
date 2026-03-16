@@ -235,12 +235,12 @@ init_rdo = np.outer(wfn, wfn.conj())</code></pre>
           <div class="code-block">
             <pre><code class="language-python">from math import ceil
 from tqdm import tqdm
-from tenso.prototypes.heom import spin_boson
+from tenso.prototypes.heom import system_single_bath
 
 end_time  = 100.0   # fs
 dt = 0.05    # fs
 
-propagator = spin_boson(
+propagator = system_single_bath(
     fname            = 'out',
     init_rdo         = init_rdo,
     sys_ham          = sys_ham,

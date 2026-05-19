@@ -21,3 +21,5 @@ commands:
     unix: rm -rf build source/autoapi && sphinx-build -M html source build
   serve:
     unix: python -m http.server --directory build/html
+include:
+  - sitemap.xml
